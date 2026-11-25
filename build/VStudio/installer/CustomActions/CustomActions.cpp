@@ -28,6 +28,67 @@
 
 static HINSTANCE DllInstance;
 
+/*
+ * Split the deferred action data without CommandLineToArgvW.
+ *
+ * The data is authored by this installer, not by a shell: arguments are
+ * separated by blanks and double quotes group them. Backslashes are literal,
+ * so a path that ends with a separator survives whether the MSI engine
+ * expands a quoted argument as "...\" or "...\\".
+ */
+static PWSTR *SplitActionData(PWSTR CommandLine, int *Argc)
+{
+    PWSTR *Argv;
+    PWSTR p;
+    int Count, Index;
+    BOOL Quoted;
+
+    for (Count = 0, p = CommandLine;; Count++)
+    {
+        while (*p == L' ' || *p == L'\t') p++;
+        if (L'\0' == *p) break;
+        Quoted = L'"' == *p;
+        if (Quoted) p++;
+        while (*p && (Quoted ? *p != L'"' : L' ' != *p && L'\t' != *p)) p++;
+        if (Quoted && L'"' == *p) p++;
+    }
+
+    Argv = (PWSTR *)LocalAlloc(LMEM_FIXED, (Count + 1) * sizeof(PWSTR));
+    if (0 == Argv) return 0;
+
+    for (Index = 0, p = CommandLine;; Index++)
+    {
+        while (*p == L' ' || *p == L'\t') p++;
+        if (L'\0' == *p) break;
+        Quoted = L'"' == *p;
+        if (Quoted) p++;
+        Argv[Index] = p;
+        while (*p && (Quoted ? *p != L'"' : L' ' != *p && L'\t' != *p)) p++;
+        if (*p) *p++ = L'\0';
+    }
+    Argv[Index] = 0;
+    *Argc = Index;
+    return Argv;
+}
+
+/* End a directory with exactly one separator, preserving a drive root. */
+static VOID NormalizeDirectory(PWSTR Path)
+{
+    int Len = lstrlenW(Path);
+
+    while (Len > 0 && (L'\\' == Path[Len - 1] || L'/' == Path[Len - 1])) Len--;
+    if (2 == Len && L':' == Path[1])
+    {
+        Path[2] = L'\\';
+        Path[3] = L'\0';
+    }
+    else
+    {
+        Path[Len] = L'\\';
+        Path[Len + 1] = L'\0';
+    }
+}
+
 UINT __stdcall InstanceID(MSIHANDLE MsiHandle)
 {
 #if 0
@@ -139,8 +200,8 @@ UINT __stdcall DeferredAction(MSIHANDLE MsiHandle)
 
     WcaLog(LOGMSG_STANDARD, "Initialized: \"%S\"", CommandLine);
 
-    Argv = CommandLineToArgvW(CommandLine, &Argc);
-    ExitOnNullWithLastError(Argv, hr, "Failed to CommandLineToArgvW");
+    Argv = SplitActionData(CommandLine, &Argc);
+    ExitOnNull(Argv, hr, E_OUTOFMEMORY, "Failed to split the action data");
 
     if (0 < Argc)
     {
@@ -191,6 +252,8 @@ DWORD InstallSymlinks(int Argc, PWSTR *Argv)
     Junctions = 0 == lstrcmpW(L"InstallJunctions", Argv[0]);
     SourceDir = Argv[1];
     TargetDir = Argv[2];
+    NormalizeDirectory(SourceDir);
+    NormalizeDirectory(TargetDir);
     SourceDirLen = lstrlenW(SourceDir);
     TargetDirLen = lstrlenW(TargetDir);
 
@@ -251,6 +314,7 @@ DWORD RemoveFiles(int Argc, PWSTR *Argv)
     }
 
     Dir = Argv[1];
+    NormalizeDirectory(Dir);
     DirLen = lstrlenW(Dir);
 
     for (int Argi = 2; Argc > Argi; Argi++)
